@@ -1,4 +1,10 @@
 #!/usr/bin/env python3
+#To Do: Resource Reallocation when new nodes connect
+#Clean up
+#Error Handling
+#Security Hardening
+
+
 import ClusterTalk
 import MessageUnderlay
 import random
@@ -9,6 +15,7 @@ import platform
 
 MasterCheckFrequency = 60
 ContainerCheckFrequency = 10
+CheckDelay = 10
 
 class LXC_Failover(ClusterTalk.clusterTalk):
     def __init__(self,Underlay,FailProt=[]):
@@ -48,6 +55,15 @@ class LXC_Failover(ClusterTalk.clusterTalk):
                     self.FailProtectedContainers = json.loads(Decoded['DATA'].decode())
                     print("Update Container List",self.FailProtectedContainers)
                     self.sendRequest(b'DONE',14,Decoded['RESPID'])
+                elif Decoded['SENDTYPE'] == 5: #Get Running Score, lower = more likely to be assigned more
+                    if Decoded['DATA'].decode() == platform.node():
+                        self.sendRequest(str(float(len(self.getRunningLocalContainers()))).encode(),15,Decoded['RESPID'])
+                elif Decoded['SENDTYPE'] == 6: #Start a Container
+                    Data = json.loads(Decoded['DATA'].decode())
+                    if Data['Host'] == platform.node():
+                        lxc.Container(Data['Container']).start()
+                        print("Start Container",Data['Container'])
+                        self.sendRequest(b'DONE',16,Decoded['RESPID'])
 
 
     
@@ -70,6 +86,48 @@ class LXC_Failover(ClusterTalk.clusterTalk):
         time.sleep(1)
         
         self.getResponses(RespID)
+
+    def getResourceLevel(self,Machine):
+        #Return a Resource Score
+        #For now it comes from the container count
+
+        #Check if we are querying ourselves
+        if Machine == platform.node():
+            return float(len(self.getRunningLocalContainers()))
+
+        
+        #Otherwise get it from another machine
+        RespID = random.randint(1,65534)
+        
+        self.sendRequest(Machine,5,RespID)
+        time.sleep(1)
+        
+        Response = self.getResponses(RespID)
+        if len(Response) == 0:
+            return -1
+
+        return float(Response[0].decode())
+
+
+    def startContainerOn(self,Node,Container):
+        #Start a Container
+
+        #Check if it is us
+        if Node == platform.node():
+            print("Start Container",Container)
+            lxc.Container(Container).start()
+        else:
+            #Otherwise get it from another machine
+            RespID = random.randint(1,65534)
+            
+            self.sendRequest(json.dumps({'Host':Node.decode(),'Container':Container}).encode(),6,RespID)
+            time.sleep(1)
+            
+            self.getResponses(RespID)
+
+
+        
+
         
         
 
@@ -104,8 +162,8 @@ class Server:
         self.MainServer.setMaster(False)
         
     def run(self):
-        LastMasterCheck = time.time()-MasterCheckFrequency+1
-        LastContainerCheck = time.time()-ContainerCheckFrequency+1
+        LastMasterCheck = time.time()-MasterCheckFrequency+CheckDelay
+        LastContainerCheck = time.time()-ContainerCheckFrequency+CheckDelay
         while True:
             if time.time() - LastMasterCheck > MasterCheckFrequency:
                 masters = self.MainServer.findMaster()
@@ -140,9 +198,26 @@ class Server:
                     Running = self.MainServer.findRunningContainers()
                     #print("Running Containers:",Running)
 
-                    for i in Running:
-                        if i not in self.MainServer.FailProtectedContainers:
-                            print("Warning,",i,"Is not Active")
+                    #Check if all containers are running as intended
+                    for i in self.MainServer.FailProtectedContainers:
+                        #If not, Start it
+                        if i not in Running:
+                            print("Warning,",i,"Is not Active, starting")
+
+                            #Determine which host is least utilised
+                            BestScore = self.MainServer.getResourceLevel(platform.node())
+                            BestNode = platform.node()
+                            for a in self.MainServer.findNodes():
+                                print("Checking node,",a)
+                                Score = self.MainServer.getResourceLevel(a)
+                                if (Score >= 0) and (Score < BestScore):
+                                    BestScore = Score
+                                    BestNode = a
+
+                            print("Selected Node",BestNode) 
+                            self.MainServer.startContainerOn(BestNode,i)
+
+
 
                 LastContainerCheck = time.time()
 

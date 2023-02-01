@@ -6,7 +6,8 @@
     "RecvIP":"0.0.0.0",
     "RecvPort":5000,
     "ProtectedContainers":[
-        "Test"
+        "Test",
+        "Test2"
     ],
     "ForwardTraffic":1
 }
