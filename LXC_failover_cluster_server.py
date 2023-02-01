@@ -5,8 +5,13 @@ import random
 import json
 import lxc
 import time
+import platform
 
 class LXC_Failover(ClusterTalk.clusterTalk):
+    def __init__(self,Underlay):
+        self.FailProtectedContainers = []
+        super().__init__(Underlay)
+
     def _getRunningLocalContainers(self):
         Running = []
         for i in lxc.list_containers():
@@ -50,6 +55,15 @@ class LXC_Failover(ClusterTalk.clusterTalk):
         Out += self._getRunningLocalContainers()
         return Out
 
+    def broadcastContainers(self):
+        pass
+
+    def enqueueContainer(self,Name):
+        self.FailProtectedContainers.append(Name)
+
+    def dequeueContainer(self,Name):
+        self.FailProtectedContainers.remove(Name)
+
     
 
 
@@ -59,30 +73,39 @@ class Server:
         self.Config = json.loads(f.read())
         f.close()
 
-        self.Underlay = MessageUnderlay.messageTransport(self.Config)
+        self.Underlay = MessageUnderlay.messageTransport(self.Config['Peers'],self.Config['RecvIP'],self.Config['RecvPort'],self.Config['ForwardTraffic'])
         self.MainServer = LXC_Failover(self.Underlay)
+
 
     def _upgradeToMaster(self):
         print("I got a Promotion! Yay!")
-        pass
+        self.MainServer.setMaster(True)
 
 
     def _downgradeToNode(self):
         print("I got Demoted! Bugger!")
-        pass
+        self.MainServer.setMaster(False)
         
     def run(self):
-        LastMasterCheck = time.time()
+        LastMasterCheck = time.time()-59
         while True:
             if time.time() - LastMasterCheck > 60:
                 masters = self.MainServer.findMaster()
+                print("Masters Running",masters)
 
                 if len(masters) == 0:
                     self._upgradeToMaster()
                 elif len(masters) > 1:
                     self._downgradeToNode()
-                    
+                else:
+                    if self.MainServer.isMaster:
+                        print("I am Master")
+                    else:
+                        print("I Am Node")
+
                 LastMasterCheck = time.time()
+
+            time.sleep(1)
 
 
 

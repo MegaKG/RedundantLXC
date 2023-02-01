@@ -9,7 +9,7 @@ class messageTransport:
     #PeerList: list of Tuples [('IP',Port)]
 
     def startPeer(self,IP,Port):
-        print("Starting",IP,':',Port)
+        print("Starting Poller",IP,':',Port)
         self.Senders.append(udp.udpsend(IP,Port))
 
     def insblock(self,V):
@@ -41,23 +41,26 @@ class messageTransport:
                 #print(MID,"Forward")
                 self.InBuffer.append(D[4:])
                 self.insblock(MID)
-                self.sendmsg(D[4:],MID)
+
+                if self.Forward:
+                    self.sendmsg(D[4:],MID)
             else:
                 #print(MID,"Block")
                 pass
 
 
-    def __init__(self,PeerList,RecvAddr,RecvPort):
+    def __init__(self,PeerList,RecvAddr,RecvPort,Forward):
         self.InBuffer = []
         self.Senders = []
         self.MSGBlock = [0]*128
+        self.Forward = Forward
 
         self.ID = random.randint(1,65534)
 
         for i in PeerList:
             self.startPeer(i[0],i[1])
 
-        print("Starting Receiver")
+        print("Receiver",RecvAddr,':',RecvPort)
         self.con = udp.udpget(RecvAddr,RecvPort)
         self.RecvThread = threading.Thread(target=self.getter,name="Receiver")
         self.RecvThread.start()
