@@ -38,7 +38,7 @@ class clusterTalk:
         self.isMaster = False
 
     def sendRequest(self,D,MSG_Type,ResponseID):
-        print("Send",D,"Type",MSG_Type,"ID",ResponseID)
+        #print("Send",D,"Type",MSG_Type,"ID",ResponseID)
         if ResponseID not in self.Responses:
             self.Responses[ResponseID] = responseArray()
 
@@ -61,7 +61,6 @@ class clusterTalk:
         
         self.sendRequest(b'SCAN',1,RespID)
         time.sleep(1)
-        print(self.Responses)
 
         Out = self.getResponses(RespID)
         Out.append(platform.node().encode())
@@ -75,7 +74,6 @@ class clusterTalk:
         
         self.sendRequest(b'FNDMSTR',2,RespID)
         time.sleep(1)
-        print(self.Responses)
 
         Out = self.getResponses(RespID)
         if self.isMaster:
@@ -91,7 +89,7 @@ class clusterTalk:
             IN = self.FetchFunction()
             
             Decoded = self._decodeRequest(IN)
-            print("Got",Decoded)
+            #print("Got",Decoded)
 
             if Decoded['SENDTYPE'] > 10:
                 #Process as Response

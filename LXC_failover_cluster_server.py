@@ -7,12 +7,15 @@ import lxc
 import time
 import platform
 
+MasterCheckFrequency = 60
+ContainerCheckFrequency = 10
+
 class LXC_Failover(ClusterTalk.clusterTalk):
-    def __init__(self,Underlay):
-        self.FailProtectedContainers = []
+    def __init__(self,Underlay,FailProt=[]):
+        self.FailProtectedContainers = FailProt
         super().__init__(Underlay)
 
-    def _getRunningLocalContainers(self):
+    def getRunningLocalContainers(self):
         Running = []
         for i in lxc.list_containers():
             C = lxc.Container(i)
@@ -25,7 +28,7 @@ class LXC_Failover(ClusterTalk.clusterTalk):
             IN = self.FetchFunction()
             
             Decoded = self._decodeRequest(IN)
-            print("Got",Decoded)
+            #print("Got",Decoded)
 
             if Decoded['SENDTYPE'] > 10:
                 #Process as Response
@@ -34,13 +37,17 @@ class LXC_Failover(ClusterTalk.clusterTalk):
 
             else:
                 #Process as Request
-                if Decoded['SENDTYPE'] == 1:
+                if Decoded['SENDTYPE'] == 1: #Get Nodes
                     self.sendRequest(platform.node().encode(),11,Decoded['RESPID'])
-                elif Decoded['SENDTYPE'] == 2:
+                elif Decoded['SENDTYPE'] == 2: #Get Masters
                     if self.isMaster:
                         self.sendRequest(platform.node().encode(),12,Decoded['RESPID'])
-                elif Decoded['SENDTYPE'] == 3:
-                    self.sendRequest(json.dumps(self._getRunningLocalContainers()).encode(),13,Decoded['RESPID'])
+                elif Decoded['SENDTYPE'] == 3: #Get Running Containers
+                    self.sendRequest(json.dumps(self.getRunningLocalContainers()).encode(),13,Decoded['RESPID'])
+                elif Decoded['SENDTYPE'] == 4: #Set Containers
+                    self.FailProtectedContainers = json.loads(Decoded['DATA'].decode())
+                    print("Update Container List",self.FailProtectedContainers)
+                    self.sendRequest(b'DONE',14,Decoded['RESPID'])
 
 
     
@@ -49,21 +56,31 @@ class LXC_Failover(ClusterTalk.clusterTalk):
         
         self.sendRequest(b'LISTCNTR',3,RespID)
         time.sleep(1)
-        print(self.Responses)
 
-        Out = json.loads(self.getResponses(RespID))
-        Out += self._getRunningLocalContainers()
+        Out = []
+        for i in self.getResponses(RespID):
+            Out += json.loads(i)
+        Out += self.getRunningLocalContainers()
         return Out
 
     def broadcastContainers(self):
-        pass
+        RespID = random.randint(1,65534)
+        
+        self.sendRequest(json.dumps(self.FailProtectedContainers).encode(),4,RespID)
+        time.sleep(1)
+        
+        self.getResponses(RespID)
+        
+        
 
+    #Override Functions
     def enqueueContainer(self,Name):
         self.FailProtectedContainers.append(Name)
+        self.broadcastContainers()
 
     def dequeueContainer(self,Name):
         self.FailProtectedContainers.remove(Name)
-
+        self.broadcastContainers()
     
 
 
@@ -74,7 +91,7 @@ class Server:
         f.close()
 
         self.Underlay = MessageUnderlay.messageTransport(self.Config['Peers'],self.Config['RecvIP'],self.Config['RecvPort'],self.Config['ForwardTraffic'])
-        self.MainServer = LXC_Failover(self.Underlay)
+        self.MainServer = LXC_Failover(self.Underlay,self.Config['ProtectedContainers'])
 
 
     def _upgradeToMaster(self):
@@ -87,9 +104,10 @@ class Server:
         self.MainServer.setMaster(False)
         
     def run(self):
-        LastMasterCheck = time.time()-59
+        LastMasterCheck = time.time()-MasterCheckFrequency+1
+        LastContainerCheck = time.time()-ContainerCheckFrequency+1
         while True:
-            if time.time() - LastMasterCheck > 60:
+            if time.time() - LastMasterCheck > MasterCheckFrequency:
                 masters = self.MainServer.findMaster()
                 print("Masters Running",masters)
 
@@ -104,6 +122,31 @@ class Server:
                         print("I Am Node")
 
                 LastMasterCheck = time.time()
+
+            if time.time() - LastContainerCheck > ContainerCheckFrequency:
+                MyContainers = self.MainServer.getRunningLocalContainers()
+                print("Local Audit")
+                for i in MyContainers:
+                    if i not in self.MainServer.FailProtectedContainers:
+                        #Could Shut it off, but we just notify for now
+                        print("Warning,",i,"Is Active but shouldn't be")
+
+
+                if self.MainServer.isMaster:
+                    print("Container List Sync")
+                    self.MainServer.broadcastContainers()
+
+                    print("Audit Containers...")
+                    Running = self.MainServer.findRunningContainers()
+                    #print("Running Containers:",Running)
+
+                    for i in Running:
+                        if i not in self.MainServer.FailProtectedContainers:
+                            print("Warning,",i,"Is not Active")
+
+                LastContainerCheck = time.time()
+
+            
 
             time.sleep(1)
 
