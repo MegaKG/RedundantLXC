@@ -125,6 +125,15 @@ class LXC_Failover(ClusterTalk.clusterTalk):
             
             self.getResponses(RespID)
 
+    def stopContainer(self,Container):
+        RespID = random.randint(1,65534)
+        
+        self.sendRequest(Container.encode(),4,RespID)
+        time.sleep(1)
+        
+        self.getResponses(RespID)
+
+
 
         
 
@@ -216,6 +225,36 @@ class Server:
 
                             print("Selected Node",BestNode) 
                             self.MainServer.startContainerOn(BestNode,i)
+
+                    #Check if we can move any containers to lower the overall load
+                    MyPeers = self.MainServer.findNodes()
+                    PeerLoads = {}
+                    HighestLoad = self.MainServer.getResourceLevel(platform.platform())
+                    LowestLoad = self.MainServer.getResourceLevel(platform.platform())
+                    HighestName = platform.platform()
+                    LowestName = platform.platform()
+
+                    for i in MyPeers:
+                        Load = self.MainServer.getResourceLevel(i)
+                        if Load >= 0:
+                            PeerLoads[i] = Load
+
+                            if Load < LowestLoad:
+                                LowestLoad = Load
+                                LowestName = i
+                            
+                            if Load > HighestLoad:
+                                HighestLoad = Load
+                                HighestName = i
+
+                    #Check if we can Move one
+                    if HighestLoad - 1 > LowestLoad:
+                        #Move from Highest to Lowest
+                        ContainerToMove = 'A'
+                        self.MainServer.stopContainer(ContainerToMove)
+                        self.MainServer.startContainerOn(LowestName,ContainerToMove)
+                    
+                        
 
 
 
