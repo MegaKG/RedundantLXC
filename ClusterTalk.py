@@ -37,18 +37,23 @@ class clusterTalk:
 
         self.isMaster = False
 
-    def sendRequest(self,D,MSG_Type,ResponseID):
+    def sendRequest(self,D,MSG_Type,ResponseID,Destination):
         #print("Send",D,"Type",MSG_Type,"ID",ResponseID)
         if ResponseID not in self.Responses:
             self.Responses[ResponseID] = responseArray()
 
-        self.Underlay.sendmsg(struct.pack('!B',MSG_Type) + struct.pack('!H',ResponseID) + D)
+        self.Underlay.sendmsg(struct.pack('!B',MSG_Type) + struct.pack('!H',ResponseID) + struct.pack('!B',len(Destination)) + Destination + struct.pack('!B',len(platform.node())) + platform.node().encode() + struct.pack('!H',len(D)) + D)
 
     def _decodeRequest(self,D):
+        DestLength = struct.unpack('!B',D[3:4])[0]
+        FromLength = struct.unpack('!B',D[4+DestLength:5+DestLength])[0]
+        DataLength = struct.unpack('!H',D[5+FromLength+DestLength:7+FromLength+DestLength])[0]
         return {
             'SENDTYPE':struct.unpack('!B',D[:1])[0],
             'RESPID':struct.unpack('!H',D[1:3])[0],
-            'DATA':D[3:]
+            'DEST':D[4:4+DestLength],
+            'FROM':D[5+DestLength:5+DestLength+FromLength],
+            'DATA':D[7+FromLength+DestLength:7+FromLength+DestLength+DataLength]
         }
 
     def getResponses(self,ID):
@@ -59,7 +64,7 @@ class clusterTalk:
     def findNodes(self):
         RespID = random.randint(1,65534)
         
-        self.sendRequest(b'SCAN',1,RespID)
+        self.sendRequest(b'',1,RespID,b'*')
         time.sleep(1)
 
         Out = self.getResponses(RespID)
@@ -72,7 +77,7 @@ class clusterTalk:
     def findMaster(self):
         RespID = random.randint(1,65534)
         
-        self.sendRequest(b'FNDMSTR',2,RespID)
+        self.sendRequest(b'',2,RespID,b'*')
         time.sleep(1)
 
         Out = self.getResponses(RespID)
@@ -89,20 +94,21 @@ class clusterTalk:
             IN = self.FetchFunction()
             
             Decoded = self._decodeRequest(IN)
-            #print("Got",Decoded)
+            if (Decoded['DEST'] == platform.node().encode()) or (Decoded['DEST'] == b'*'):
+                #print("Got",Decoded)
 
-            if Decoded['SENDTYPE'] > 10:
-                #Process as Response
-                if Decoded['RESPID'] in self.Responses:
-                    self.Responses[Decoded['RESPID']].append(Decoded['DATA'])
+                if Decoded['SENDTYPE'] > 10:
+                    #Process as Response
+                    if Decoded['RESPID'] in self.Responses:
+                        self.Responses[Decoded['RESPID']].append(Decoded['DATA'])
 
-            else:
-                #Process as Request
-                if Decoded['SENDTYPE'] == 1:
-                    self.sendRequest(platform.node().encode(),11,Decoded['RESPID'])
-                elif Decoded['SENDTYPE'] == 2:
-                    if self.isMaster:
-                        self.sendRequest(platform.node().encode(),12,Decoded['RESPID'])
+                else:
+                    #Process as Request
+                    if Decoded['SENDTYPE'] == 1:
+                        self.sendRequest(platform.node().encode(),11,Decoded['RESPID'],Decoded['FROM'])
+                    elif Decoded['SENDTYPE'] == 2:
+                        if self.isMaster:
+                            self.sendRequest(platform.node().encode(),12,Decoded['RESPID'],Decoded['FROM'])
                 
     def gc(self):
         while True:
@@ -117,7 +123,7 @@ class clusterTalk:
 def test():
     Clients = [('10.0.2.4',5000),('10.0.2.5',5000)]
     import MessageUnderlay
-    Underlay = MessageUnderlay.messageTransport(Clients,'0.0.0.0',5000)
+    Underlay = MessageUnderlay.messageTransport(Clients,'0.0.0.0',5000,True)
     Talk = clusterTalk(Underlay)
 
     while True:
