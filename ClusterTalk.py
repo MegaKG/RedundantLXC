@@ -57,8 +57,11 @@ class clusterTalk:
         }
 
     def getResponses(self,ID):
-        Out = self.Responses[ID].getall()
-        del self.Responses[ID]
+        if ID in self.Responses:
+            Out = self.Responses[ID].getall()
+            del self.Responses[ID]
+        else:
+            Out = []
         return Out
 
     def findNodes(self):
