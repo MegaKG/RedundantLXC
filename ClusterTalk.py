@@ -10,10 +10,17 @@ class responseArray:
         self.t = time.time()
         self.a = []
 
-    def append(self,D):
-        self.a.append(D)
+    def append(self,From,D):
+        self.a.append({'From':From,'Data':D})
 
-    def getall(self):
+    def getAll(self):
+        Out = []
+        for i in self.a:
+            Out.append(i['Data'])
+        return Out
+        
+    
+    def getNamedAll(self):
         return self.a
 
     def cleanup(self):
@@ -58,7 +65,15 @@ class clusterTalk:
 
     def getResponses(self,ID):
         if ID in self.Responses:
-            Out = self.Responses[ID].getall()
+            Out = self.Responses[ID].getAll()
+            del self.Responses[ID]
+        else:
+            Out = []
+        return Out
+    
+    def getNamedResponses(self,ID):
+        if ID in self.Responses:
+            Out = self.Responses[ID].getNamedAll()
             del self.Responses[ID]
         else:
             Out = []
@@ -103,7 +118,7 @@ class clusterTalk:
                 if Decoded['SENDTYPE'] > 10:
                     #Process as Response
                     if Decoded['RESPID'] in self.Responses:
-                        self.Responses[Decoded['RESPID']].append(Decoded['DATA'])
+                        self.Responses[Decoded['RESPID']].append(Decoded['FROM'],Decoded['DATA'])
 
                 else:
                     #Process as Request

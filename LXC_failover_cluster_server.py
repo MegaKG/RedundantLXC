@@ -1,8 +1,5 @@
 #!/usr/bin/env python3
-#To Do: Resource Reallocation when new nodes connect
-#Clean up
-#Error Handling
-#Security Hardening
+#ToDo: Security Hardening
 
 
 import ClusterTalk
@@ -17,11 +14,13 @@ MasterCheckFrequency = 60
 ContainerCheckFrequency = 10
 CheckDelay = 10
 
+#This is the underlay
 class LXC_Failover(ClusterTalk.clusterTalk):
     def __init__(self,Underlay,FailProt=[]):
         self.FailProtectedContainers = FailProt
         super().__init__(Underlay)
 
+    #Local Utility for getting containers running on this machine
     def getRunningLocalContainers(self):
         Running = []
         for i in lxc.list_containers():
@@ -30,76 +29,124 @@ class LXC_Failover(ClusterTalk.clusterTalk):
                 Running.append(i)
         return Running
 
+    #Handles Incoming Messages
     def msgHandler(self):
         while True:
+            #Get a message
             IN = self.FetchFunction()
             
-            Decoded = self._decodeRequest(IN)
-            if (Decoded['DEST'] == platform.node().encode()) or (Decoded['DEST'] == b'*'):
-                #print("Got",Decoded)
+            try:
+                #Decode the Message into its fields
+                Decoded = self._decodeRequest(IN)
 
-                if Decoded['SENDTYPE'] > 10:
-                    #Process as Response
-                    if Decoded['RESPID'] in self.Responses:
-                        self.Responses[Decoded['RESPID']].append(Decoded['DATA'])
+                #If it was us that was addressed, act on it
+                if (Decoded['DEST'] == platform.node().encode()) or (Decoded['DEST'] == b'*'):
+                    #print("Got",Decoded)
 
-                else:
-                    #Process as Request
-                    if Decoded['SENDTYPE'] == 1: #Get Nodes
-                        self.sendRequest(platform.node().encode(),11,Decoded['RESPID'],Decoded['FROM'])
-                    elif Decoded['SENDTYPE'] == 2: #Get Masters
-                        if self.isMaster:
-                            self.sendRequest(platform.node().encode(),12,Decoded['RESPID'],Decoded['FROM'])
-                    elif Decoded['SENDTYPE'] == 3: #Get Running Containers
-                        self.sendRequest(json.dumps(self.getRunningLocalContainers()).encode(),13,Decoded['RESPID'],Decoded['FROM'])
-                    elif Decoded['SENDTYPE'] == 4: #Set Containers
-                        self.FailProtectedContainers = json.loads(Decoded['DATA'].decode())
-                        print("Update Container List",self.FailProtectedContainers)
-                        self.sendRequest(b'DONE',14,Decoded['RESPID'],Decoded['FROM'])
-                    elif Decoded['SENDTYPE'] == 5: #Get Running Score, lower = more likely to be assigned more
-                        self.sendRequest(str(float(len(self.getRunningLocalContainers()))).encode(),15,Decoded['RESPID'],Decoded['FROM'])
-                    elif Decoded['SENDTYPE'] == 6: #Start a Container
-                        Data = json.loads(Decoded['DATA'].decode())
-                        
-                        lxc.Container(Data['Container']).start()
-                        print("Start Container",Data['Container'])
-                        self.sendRequest(b'DONE',16,Decoded['RESPID'],Decoded['FROM'])
+                    #Any Message with type above 10 is a response
+                    if Decoded['SENDTYPE'] > 10:
+                        #Process as Response
+
+                        #Check if we are waiting for the message
+                        if Decoded['RESPID'] in self.Responses:
+                            #Attach it to the queue
+                            self.Responses[Decoded['RESPID']].append(Decoded['FROM'],Decoded['DATA'])
+
+                    else:
+                        #Process as Request
+
+                        #Determine actions
+
+                        if Decoded['SENDTYPE'] == 1: #Get Nodes
+                            self.sendRequest(platform.node().encode(),11,Decoded['RESPID'],Decoded['FROM'])
+
+                        elif Decoded['SENDTYPE'] == 2: #Get Masters
+                            if self.isMaster:
+                                self.sendRequest(platform.node().encode(),12,Decoded['RESPID'],Decoded['FROM'])
+
+                        elif Decoded['SENDTYPE'] == 3: #Get Running Containers
+                            self.sendRequest(json.dumps(self.getRunningLocalContainers()).encode(),13,Decoded['RESPID'],Decoded['FROM'])
+
+                        elif Decoded['SENDTYPE'] == 4: #Set Required Containers
+                            self.FailProtectedContainers = json.loads(Decoded['DATA'].decode())
+                            print("Update Container List",self.FailProtectedContainers)
+                            self.sendRequest(b'DONE',14,Decoded['RESPID'],Decoded['FROM'])
+
+                        elif Decoded['SENDTYPE'] == 5: #Get Running Score, lower = more likely to be assigned more
+                            self.sendRequest(str(float(len(self.getRunningLocalContainers()))).encode(),15,Decoded['RESPID'],Decoded['FROM'])
+
+                        elif Decoded['SENDTYPE'] == 6: #Start a Container
+                            ContainerName = Decoded['DATA'].decode()
+                            
+                            lxc.Container(ContainerName).start()
+                            print("Start Container",ContainerName)
+                            self.sendRequest(b'DONE',16,Decoded['RESPID'],Decoded['FROM'])
+
+                        elif Decoded['SENDTYPE'] == 7: #Start a Container
+                            ContainerName = Decoded['DATA'].decode()
+                            
+                            lxc.Container(ContainerName).stop()
+                            print("Stop Container",ContainerName)
+                            self.sendRequest(b'DONE',17,Decoded['RESPID'],Decoded['FROM'])
+            
+            #Error Handling
+            except Exception as E:
+                print("Receiver Error",E)
 
 
-    
-    def findRunningContainers(self):
+    #Here are the requests available
+
+    #Gets running containers on a node, returns a list. If b'*' is the target, an array of all containers in the network is returned.
+    def findRunningContainers(self,Node):
         RespID = random.randint(1,65534)
         
-        self.sendRequest(b'LISTCNTR',3,RespID,platform.node().encode())
+        self.sendRequest(b'',3,RespID,Node)
         time.sleep(1)
 
         Out = []
         for i in self.getResponses(RespID):
             Out += json.loads(i)
-        Out += self.getRunningLocalContainers()
+            
+        if (Node == platform.node().encode()) or (Node == b'*'):
+            Out += self.getRunningLocalContainers()
         return Out
-
-    def broadcastContainers(self):
+    
+    #Same as above, but queries all nodes and returns a dictionary {b'nodeName':[ContainerArrayOfStringNames]}
+    def findRunningContainersByNode(self):
         RespID = random.randint(1,65534)
         
-        self.sendRequest(json.dumps(self.FailProtectedContainers).encode(),4,RespID,platform.node().encode())
+        self.sendRequest(b'',3,RespID,b'*')
+        time.sleep(1)
+
+        Out = {}
+        for i in self.getNamedResponses(RespID):
+            Out[i['From']] = json.loads(i['Data'])
+        Out[platform.node().encode()] = self.getRunningLocalContainers()
+        return Out
+
+    #Announce my protected containers to the rest of the cluster
+    def broadcastContainers(self,Node):
+        RespID = random.randint(1,65534)
+        
+        self.sendRequest(json.dumps(self.FailProtectedContainers).encode(),4,RespID,Node)
         time.sleep(1)
         
         self.getResponses(RespID)
 
-    def getResourceLevel(self,Machine):
+    #Get the resource score of a node, returns float. b'*' cannot be used here
+    def getResourceLevel(self,Node):
         #Return a Resource Score
         #For now it comes from the container count
 
         #Check if we are querying ourselves
-        if Machine == platform.node():
+        if Node == platform.node().encode():
             return float(len(self.getRunningLocalContainers()))
 
         
         #Otherwise get it from another machine
         RespID = random.randint(1,65534)
         
-        self.sendRequest(b'',5,RespID,platform.node().encode())
+        self.sendRequest(b'',5,RespID,Node)
         time.sleep(1)
         
         Response = self.getResponses(RespID)
@@ -108,49 +155,68 @@ class LXC_Failover(ClusterTalk.clusterTalk):
 
         return float(Response[0].decode())
 
+    #Get the resource scores of the whole cluster and returns a dictionary {b'nodeName':FloatValue}
+    def getResourceLevelByNode(self):
+        #Return a Resource Score
+        #For now it comes from the container count
+        Out = {}
 
+        #Check if we are querying ourselves
+        Out[platform.node().encode()] = float(len(self.getRunningLocalContainers()))
+
+        
+        #Otherwise get it from another machine
+        RespID = random.randint(1,65534)
+        
+        self.sendRequest(b'',5,RespID,b'*')
+        time.sleep(1)
+        
+        Response = self.getNamedResponses(RespID)
+        for i in Response:
+            Out[i['From']] = float(i['Data'].decode())
+        
+        return Out
+
+    #Starts a container on a node. Node is bytes, Container is string. Node cannot be b'*'
     def startContainerOn(self,Node,Container):
         #Start a Container
 
         #Check if it is us
-        if Node == platform.node():
+        if Node == platform.node().encode():
             print("Start Container",Container)
             lxc.Container(Container).start()
         else:
             #Otherwise get it from another machine
             RespID = random.randint(1,65534)
             
-            self.sendRequest(json.dumps({'Host':Node.decode(),'Container':Container}).encode(),6,RespID,platform.node().encode())
+            self.sendRequest(Container.encode(),6,RespID,Node)
             time.sleep(1)
             
             self.getResponses(RespID)
 
-    def stopContainer(self,Container):
+    #Stops a container on a node. Node is bytes, Container is string. Node cannot be b'*'
+    def stopContainer(self,Node,Container):
         RespID = random.randint(1,65534)
         
-        self.sendRequest(Container.encode(),4,RespID,platform.node().encode())
+        self.sendRequest(Container.encode(),7,RespID,Node)
         time.sleep(1)
         
         self.getResponses(RespID)
 
-
-
-        
-
-        
-        
-
     #Override Functions
+
+    #Add a container to the Protected Array
     def enqueueContainer(self,Name):
         self.FailProtectedContainers.append(Name)
         self.broadcastContainers()
 
+    #Delete a container from the Protected Array
     def dequeueContainer(self,Name):
         self.FailProtectedContainers.remove(Name)
         self.broadcastContainers()
     
 
-
+#This is the Server implementation
 class Server:
     def __init__(self,ConfigFile):
         f = open(ConfigFile,'r')
@@ -201,10 +267,13 @@ class Server:
 
                 if self.MainServer.isMaster:
                     print("Container List Sync")
-                    self.MainServer.broadcastContainers()
+                    self.MainServer.broadcastContainers(b'*')
 
                     print("Audit Containers...")
-                    Running = self.MainServer.findRunningContainers()
+                    #Get a List of all Running Containers
+                    Running = self.MainServer.findRunningContainers(b'*')
+                    #Get the Resource Usage Dictionary by Node
+                    Resources = self.MainServer.getResourceLevelByNode()
                     #print("Running Containers:",Running)
 
                     #Check if all containers are running as intended
@@ -213,45 +282,37 @@ class Server:
                         if i not in Running:
                             print("Warning,",i,"Is not Active, starting")
 
-                            #Determine which host is least utilised #Fix Me (Multicast)
-                            BestScore = self.MainServer.getResourceLevel(platform.node())
-                            BestNode = platform.node().encode()
-                            for a in self.MainServer.findNodes():
-                                print("Checking node,",a)
-                                Score = self.MainServer.getResourceLevel(a)
-                                if (Score >= 0) and (Score < BestScore):
-                                    BestScore = Score
-                                    BestNode = a
+                            #Determine which host is least utilised 
+                            BestNode = min(Resources,key=Resources.get) #Magic
+
 
                             print("Selected Node",BestNode) 
+                            #Start the Container
                             self.MainServer.startContainerOn(BestNode,i)
 
-                    #Check if we can move any containers to lower the overall load
-                    MyPeers = self.MainServer.findNodes()
-                    PeerLoads = {}
-                    HighestLoad = self.MainServer.getResourceLevel(platform.node().encode())
-                    LowestLoad = self.MainServer.getResourceLevel(platform.node().encode())
-                    HighestName = platform.node().encode()
-                    LowestName = platform.node().encode()
+                            #Refresh the Resource Level
+                            Resources[BestNode] = self.MainServer.getResourceLevel(BestNode) 
 
-                    for i in MyPeers:
-                        Load = self.MainServer.getResourceLevel(i)
-                        if Load >= 0:
-                            PeerLoads[i] = Load
 
-                            if Load < LowestLoad:
-                                LowestLoad = Load
-                                LowestName = i
                             
-                            if Load > HighestLoad:
-                                HighestLoad = Load
-                                HighestName = i
+
+                    #Check if we can move any containers to lower the overall load
+                    MyPeers = list(Resources.keys())
+                    
+                    HighestLoad = max(Resources.values())
+                    LowestLoad = min(Resources.values())
+                    HighestName = max(Resources,key=Resources.get)
+                    LowestName = min(Resources,key=Resources.get)
 
                     #Check if we can Move one
-                    if HighestLoad - 1 > LowestLoad:
+                    if HighestLoad - 1 > LowestLoad: # ToDo: Fix this Assignment
                         #Move from Highest to Lowest
-                        ContainerToMove = 'A'
-                        self.MainServer.stopContainer(ContainerToMove)
+
+                        #Get Containers on the Highest
+                        HContainers = self.MainServer.findRunningContainers(HighestName) 
+                        ContainerToMove = HContainers[0]
+                        print("Moving",ContainerToMove,"From",HighestName,"To",LowestName)
+                        self.MainServer.stopContainer(HighestName,ContainerToMove)
                         self.MainServer.startContainerOn(LowestName,ContainerToMove)
                     
                         
