@@ -9,6 +9,7 @@ import json
 import lxc
 import time
 import platform
+import psutil
 
 MasterCheckFrequency = 60
 ContainerCheckFrequency = 10
@@ -28,6 +29,14 @@ class LXC_Failover(ClusterTalk.clusterTalk):
             if C.running:
                 Running.append(i)
         return Running
+    
+
+    #Get the resource score
+    def getLocalResourceLevel(self):
+        RunningContainers = len(self.getRunningLocalContainers())
+        Memory = psutil.virtual_memory()
+        return (Memory.used/Memory.total) * RunningContainers
+
 
     #Handles Incoming Messages
     def msgHandler(self):
@@ -73,7 +82,8 @@ class LXC_Failover(ClusterTalk.clusterTalk):
                             self.sendRequest(b'DONE',14,Decoded['RESPID'],Decoded['FROM'])
 
                         elif Decoded['SENDTYPE'] == 5: #Get Running Score, lower = more likely to be assigned more
-                            self.sendRequest(str(float(len(self.getRunningLocalContainers()))).encode(),15,Decoded['RESPID'],Decoded['FROM'])
+                            Score = self.getLocalResourceLevel()
+                            self.sendRequest(str(Score).encode(),15,Decoded['RESPID'],Decoded['FROM'])
 
                         elif Decoded['SENDTYPE'] == 6: #Start a Container
                             ContainerName = Decoded['DATA'].decode()
@@ -82,7 +92,7 @@ class LXC_Failover(ClusterTalk.clusterTalk):
                             print("Start Container",ContainerName)
                             self.sendRequest(b'DONE',16,Decoded['RESPID'],Decoded['FROM'])
 
-                        elif Decoded['SENDTYPE'] == 7: #Start a Container
+                        elif Decoded['SENDTYPE'] == 7: #Stop a Container
                             ContainerName = Decoded['DATA'].decode()
                             
                             lxc.Container(ContainerName).stop()
@@ -162,7 +172,7 @@ class LXC_Failover(ClusterTalk.clusterTalk):
         Out = {}
 
         #Check if we are querying ourselves
-        Out[platform.node().encode()] = float(len(self.getRunningLocalContainers()))
+        Out[platform.node().encode()] = self.getLocalResourceLevel()
 
         
         #Otherwise get it from another machine
@@ -239,6 +249,9 @@ class Server:
     def run(self):
         LastMasterCheck = time.time()-MasterCheckFrequency+CheckDelay
         LastContainerCheck = time.time()-ContainerCheckFrequency+CheckDelay
+
+        #This ensures that we don't move the same container multiple times
+        LastMoveTarget = {}
         while True:
             if time.time() - LastMasterCheck > MasterCheckFrequency:
                 masters = self.MainServer.findMaster()
@@ -305,15 +318,30 @@ class Server:
                     LowestName = min(Resources,key=Resources.get)
 
                     #Check if we can Move one
-                    if HighestLoad - 1 > LowestLoad: # ToDo: Fix this Assignment
+                    if HighestLoad > LowestLoad: # ToDo: Fix this Assignment
+                        #Clean the No Move Registry
+                        for name in list(LastMoveTarget.keys()):
+                            if time.time() - LastMoveTarget[name] > 3600:
+                                del LastMoveTarget[name]
+
+                        
                         #Move from Highest to Lowest
 
                         #Get Containers on the Highest
                         HContainers = self.MainServer.findRunningContainers(HighestName) 
-                        ContainerToMove = HContainers[0]
-                        print("Moving",ContainerToMove,"From",HighestName,"To",LowestName)
-                        self.MainServer.stopContainer(HighestName,ContainerToMove)
-                        self.MainServer.startContainerOn(LowestName,ContainerToMove)
+
+                        #Check if we can move it
+                        ContainerToMove = False
+                        for name in HContainers:
+                            if (HighestName not in LastMoveTarget):
+                                ContainerToMove = name
+                
+                        if ContainerToMove != False:
+                            print("Moving",ContainerToMove,"From",HighestName,"To",LowestName)
+                            self.MainServer.stopContainer(HighestName,ContainerToMove)
+                            self.MainServer.startContainerOn(LowestName,ContainerToMove)
+
+                            LastMoveTarget[ContainerToMove] = time.time()
                     
                         
 
